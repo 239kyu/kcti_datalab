@@ -1,0 +1,134 @@
+###################################################################
+# 국민여행 조사 OD데이터의 복귀 데이터 작성
+# 조건 1. 각 여행차수가 종료되면 복귀데이터 생성(마지막 방문지 -> 거주지)
+# 조건 2. 단 한 여행 차수 내 방문지가 여러 곳이면 1개의 복귀데이터만 생성함
+# 버전: 20231031_1, 이상규
+# 가중치 정보를 모든 열에 포함하도록 변경
+###################################################################
+
+from google.colab import drive
+drive.mount('/content/drive')
+
+###패키지로드
+import pandas as pd #패키지로드
+
+###데이터로드
+od_data = pd.read_excel('/content/drive/MyDrive/domestictour/0623_19년 국민여행 OD.xlsx') #데이터 로드
+
+###전처리작업
+od_data['여행차수'] = od_data['여행순서'].fillna('여행 1차') #여행 1차 컬럼의 null값을 '여행 1차로 대체'
+od_data['여행차수'] = od_data['여행차수'].map({'여행 1차': 1, '여행 2차': 2, '여행 3차': 3, '여행 4차': 4, '여행 5차': 5,
+                                           '여행 6차': 6, '여행 7차': 7, '여행 8차': 8})     #여행차수 컬럼의 데이터 형식을 '여행 n차' → 'n'형태로 변환
+
+## ID생성
+od_data['여행차수'] = od_data['여행차수'].astype(str) #여행차수 컬럼 데이터 형식을 문자열로 전환
+od_data['ID'] = od_data['아이디'] + '-' + od_data['여행차수']   #아이디컬럼과 여행차수 컬럼을 합쳐 여행차수별로 구분된 새로운 ID 생성
+
+## 시도, 시군구 컬럼통합
+od_data['출발지'] = od_data['출발 시도'] + ' ' + od_data['출발 시군구']
+od_data['도착지'] = od_data['방문지 시도'] + ' ' + od_data['방문지 시군구']
+
+
+###복귀데이터 생성
+
+## 그룹화(마지막방문지, 최종복귀처 데이터 선별)
+last_destination = od_data.groupby('ID')['도착지'].last().reset_index()   #ID기준으로 묶고 그룹별 가장 마지막 데이터의 도착지 정보 선별(마지막방문지)
+first_departure = od_data.groupby('ID')['출발지'].first().reset_index()   #ID기준으로 묶고 그룹별 가장 첫번째 데이터의 출발지 정보 선별(복귀처)
+
+
+## 데이터프레임으로 변환
+return_schedule = pd.DataFrame({
+    'ID': last_destination['ID'],
+    '출발지': last_destination['도착지'],
+    '도착지': first_departure['출발지'],
+    '여행차수': 100  #복귀 데이터의 여행차수를 일괄 100으로 설정
+
+
+      
+###최종 데이터 생성
+
+## 기존 OD데이터와 복귀 데이터를 합침
+od_data_1 = pd.concat([od_data, return_schedule], ignore_index=True)
+
+## 정렬 조정
+od_data_1 = od_data_1.sort_values(by=['ID', '여행차수'], ascending=[False, True]).reset_index(drop=True)
+
+## 최종데이터 엑셀로 익스포트
+#od_data_1.to_excel('/content/drive/MyDrive/domestictour/oddata_20230911_3.xlsx', index=False)
+
+new_df = od_data_1[['ID', '가중치_국내']].drop_duplicates()
+new_df_2 = new_df.dropna(subset=['가중치_국내'])
+
+od_data_2 = od_data_1.merge(new_df_2, on='ID', how='left')
+
+
+od_data_2.to_excel('/content/drive/MyDrive/domestictour/oddata_20231031.xlsx', index=False)
+
+
+
+
+###################################################################
+# 국민여행조사 OD데이터의 출발지 도착지 모든 조합 생성
+# 조건 1. 출발지, 도착지를 합친 후 중복제거
+# 조건 2. 중복제거 후 나오는 지자체에서 가능한 모든 출발도착 조합을 LIST로 생성
+# 버전: 20231023_1, 이상규
+###################################################################
+
+
+###패키지로드
+import itertools #조합연산용
+
+### 전처리 영역
+
+## 출발지와 도착지를 하나로 합치고 중복제거
+local = pd.concat([od_data_2['출발지'], od_data_2['도착지']], ignore_index=True)
+local1 = local.dropna().unique()
+
+## 가능한 모든 2개씩 짝지어 나올 수 있는 조합 생성
+combinations = list(itertools.combinations(local1, 2))
+
+## B 컬럼과 C 컬럼을 저장할 리스트
+출발지_column = []
+도착지_column = []
+
+## 조합을 B 컬럼과 C 컬럼에 나눠 입력
+for combination in combinations:
+    출발지_column.append(combination[0])
+    도착지_column.append(combination[1])
+
+## 데이터프레임으로 변환
+data = {'origin': 출발지_column, 'destination': 도착지_column}
+df = pd.DataFrame(data)
+
+
+### 최종데이터 엑셀로 익스포트
+#df.to_excel('/content/drive/MyDrive/domestictour/od_list.xlsx', index=False)
+
+
+###################################################################
+# 국민여행조사 이동단위로 구분된 OD데이터에 크롤링을 통해 얻은 거리와 시간 데이터 결합
+# 버전: 20231031_1, 이상규
+# 가중치정보를 반영하여 데이터프레임 결합
+###################################################################
+
+###패키지 로드
+import pandas as pd
+
+###데이터 로드
+od_comp_547_100 = pd.read_excel('/content/drive/MyDrive/domestictour/od_comp_547_1000.xlsx') #크롤링데이터(1차)
+od_comp_1000_end = pd.read_excel('/content/drive/MyDrive/domestictour/od_comp_1000_end.xlsx') #크롤링데이터(2차)
+od_comp_ef2_new = pd.read_excel('/content/drive/MyDrive/domestictour/od_comp_df2_new.xlsx') #크롤링데이터(3차)
+
+###크롤링 데이터를 1개 데이터프레임으로 합침
+od_comp = pd.concat(objs = [od_comp_547_100, od_comp_1000_end, od_comp_ef2_new], ignore_index=True)
+
+###크롤링 데이터에 결합 키생성(출발지+도착지)
+od_comp['key']= od_comp['Origin'] + od_comp['Destination']
+#OD 데이터에 결합 키생성(출발지+도착지)
+od_data_2['key']= od_data_1['출발지'] + od_data_1['도착지']
+
+###데이터결합(od데이터 기준 leftjoin, 결합키 = 출발지+도착지)
+od_data_3 = od_data_2.merge(od_comp, how = 'left', on = 'key')
+
+####결과 저장
+od_data_3.to_excel('/content/drive/MyDrive/domestictour/oddata_20231031_1.xlsx', index=False)
